@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block title %}Upload Scan - OralCare Portal{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card p-4">
+      <h3 class="fw-bold text-primary-red mb-3">Upload Oral cavity Scan</h3>
+      <form action="{{ url_for('scan') }}" method="POST" enctype="multipart/form-data">
+        <div class="mb-3">
+          <label class="form-label">Patient Full Name</label>
+          <input type="text" name="patient_name" class="form-control" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Contact Email</label>
+          <input type="email" name="email" class="form-control" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Oral Cavity Image File</label>
+          <input type="file" name="file" class="form-control" accept="image/*" required>
+        </div>
+        <button type="submit" class="btn btn-primary-red w-100 fw-semibold">Analyze Image</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

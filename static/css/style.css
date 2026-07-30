@@ -1,0 +1,66 @@
+:root {
+  --bg-main: #fcf8f9;
+  --bg-soft-pink: #fbebf0;
+  --primary-red: #d94b5e;
+  --primary-red-hover: #c23b4e;
+  --dark-text: #2c3e50;
+  --clear-green: #10b981;
+  --danger-red: #dc2626;
+}
+
+body {
+  background-color: var(--bg-main);
+  color: var(--dark-text);
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+  flex: 1;
+}
+
+.bg-soft-pink {
+  background-color: var(--bg-soft-pink) !important;
+}
+
+.text-primary-red {
+  color: var(--primary-red) !important;
+}
+
+.btn-primary-red {
+  background-color: var(--primary-red);
+  border-color: var(--primary-red);
+  color: #ffffff;
+  transition: all 0.2s ease-in-out;
+}
+
+.btn-primary-red:hover {
+  background-color: var(--primary-red-hover);
+  border-color: var(--primary-red-hover);
+  color: #ffffff;
+}
+
+.navbar-brand img {
+  height: 40px;
+  width: auto;
+}
+
+.card {
+  border-radius: 12px;
+  border: 1px solid rgba(217, 75, 94, 0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+}
+
+.result-card-cancer {
+  border-left: 6px solid var(--danger-red) !important;
+}
+
+.result-card-clear {
+  border-left: 6px solid var(--clear-green) !important;
+}
+
+.result-card-invalid {
+  border-left: 6px solid #f59e0b !important;
+}

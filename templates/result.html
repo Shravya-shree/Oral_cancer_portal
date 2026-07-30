@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% block title %}Screening Result - OralCare Portal{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8">
+    <div class="card p-4">
+      <h3 class="fw-bold border-bottom pb-2">Diagnostic Summary</h3>
+      <div class="row mt-3">
+        <div class="col-md-6">
+          <p><strong>Patient:</strong> {{ scan.patient_name }}</p>
+          <p><strong>Email:</strong> {{ scan.email }}</p>
+          <p><strong>Date:</strong> {{ scan.scan_date }}</p>
+          <p><strong>Analysis Output:</strong></p>
+          {% if scan.result == 'Cancer Detected' %}
+            <div class="alert alert-danger fw-bold"><i class="bi bi-exclamation-triangle"></i> Indication Found</div>
+          {% elif scan.result == 'Clear' %}
+            <div class="alert alert-success fw-bold"><i class="bi bi-check-circle"></i> Clear</div>
+          {% else %}
+            <div class="alert alert-warning fw-bold"><i class="bi bi-question-circle"></i> Invalid Image - Re-upload Required</div>
+          {% endif %}
+        </div>
+        <div class="col-md-6 text-center">
+          <img src="{{ url_for('static', filename='uploads/' + scan.image) }}" class="img-fluid rounded border mb-2" style="max-height: 200px;">
+          <br>
+          <img src="{{ url_for('static', filename='uploads/' + scan.qr) }}" class="img-thumbnail" style="width: 100px;">
+        </div>
+      </div>
+      <div class="mt-4 border-top pt-3 text-end">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Return to Dashboard</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

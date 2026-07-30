@@ -1,0 +1,71 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard - OralCare Portal{% endblock %}
+
+{% block content %}
+<h2 class="fw-bold mb-4">Welcome back, <span class="text-primary-red">{{ session.get('username') }}</span></h2>
+
+{% if recent_scan %}
+<div class="card mb-4 p-3 {% if recent_scan.result == 'Cancer Detected' %}result-card-cancer{% elif recent_scan.result == 'Clear' %}result-card-clear{% else %}result-card-invalid{% endif %}">
+  <div class="d-flex justify-content-between align-items-center">
+    <div>
+      <h5 class="fw-bold mb-1">Latest Screening: {{ recent_scan.patient_name }}</h5>
+      <p class="text-muted small mb-0">Date: {{ recent_scan.scan_date }}</p>
+    </div>
+    <div>
+      {% if recent_scan.result == 'Cancer Detected' %}
+        <span class="badge bg-danger fs-6">Indication Found</span>
+      {% elif recent_scan.result == 'Clear' %}
+        <span class="badge bg-success fs-6">Clear</span>
+      {% else %}
+        <span class="badge bg-warning text-dark fs-6">Invalid Image - Re-upload</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card p-3">
+  <h4 class="fw-bold mb-3">Scan History</h4>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Patient Name</th>
+          <th>Status</th>
+          <th>Preview</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for scan in scans %}
+        <tr>
+          <td>{{ scan.scan_date }}</td>
+          <td>{{ scan.patient_name }}</td>
+          <td>
+            {% if scan.result == 'Cancer Detected' %}
+              <span class="badge bg-danger">Indication Found</span>
+            {% elif scan.result == 'Clear' %}
+              <span class="badge bg-success">Clear</span>
+            {% else %}
+              <span class="badge bg-warning text-dark">Invalid Image</span>
+            {% endif %}
+          </td>
+          <td>
+            <img src="{{ url_for('static', filename='uploads/' + scan.image) }}" class="rounded" style="width: 45px; height: 45px; object-fit: cover;">
+          </td>
+          <td>
+            <a href="{{ url_for('result', scan_id=scan.id) }}" class="btn btn-sm btn-outline-secondary">View Report</a>
+            <a href="{{ url_for('static', filename='uploads/' + scan.qr) }}" download class="btn btn-sm btn-primary-red"><i class="bi bi-qr-code"></i> Download QR</a>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5" class="text-center text-muted">No screening history available.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

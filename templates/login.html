@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block title %}Login - OralCare Portal{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center py-5">
+  <div class="col-md-5">
+    <div class="card p-4">
+      <h3 class="fw-bold text-center text-primary-red mb-3">Portal Login</h3>
+      <form action="{{ url_for('login') }}" method="POST">
+        <div class="mb-3">
+          <label class="form-label font-weight-bold">Username</label>
+          <input type="text" name="username" class="form-control" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Password</label>
+          <input type="password" name="password" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary-red w-100 fw-semibold">Sign In</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}Home - OralCare Portal{% endblock %}
+
+{% block content %}
+<div class="p-5 mb-4 bg-soft-pink rounded-3 text-center border">
+  <div class="container-fluid py-3">
+    <h1 class="display-5 fw-bold text-primary-red">AI-Powered Oral Cancer Screening</h1>
+    <p class="col-md-8 fs-5 mx-auto text-secondary mt-3">
+      Instant, confidential pre-screening powered by deep learning. Upload clinical or patient images for instant assessment.
+    </p>
+    {% if session.get('user_id') %}
+      <a href="{{ url_for('scan') }}" class="btn btn-primary-red btn-lg mt-3 fw-semibold">Perform New Scan</a>
+    {% else %}
+      <a href="{{ url_for('register') }}" class="btn btn-primary-red btn-lg mt-3 fw-semibold">Get Started</a>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
