@@ -4,23 +4,43 @@
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-6">
-    <div class="card p-4">
-      <h3 class="fw-bold text-primary-red mb-3">Upload Oral cavity Scan</h3>
+    <div class="card p-4 shadow-sm border-0 rounded-3">
+      
+      <!-- Scan Title -->
+      <div class="mb-4">
+        <h3 class="fw-bold text-primary-red mb-1">Upload Oral Cavity Scan</h3>
+        <p class="text-muted small">Logged in as: <strong>{{ patient_name }}</strong></p>
+      </div>
+
+      <!-- Flash Alert Messages -->
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show py-2 small" role="alert">
+              {{ message }}
+              <button type="button" class="btn-close py-2" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      <!-- Direct Image Upload Form -->
       <form action="{{ url_for('scan') }}" method="POST" enctype="multipart/form-data">
-        <div class="mb-3">
-          <label class="form-label">Patient Full Name</label>
-          <input type="text" name="patient_name" class="form-control" required>
-        </div>
-        <div class="mb-3">
-          <label class="form-label">Contact Email</label>
-          <input type="email" name="email" class="form-control" required>
-        </div>
-        <div class="mb-3">
-          <label class="form-label">Oral Cavity Image File</label>
+        
+        <div class="mb-4">
+          <label class="form-label fw-semibold">Oral Cavity Image File</label>
           <input type="file" name="file" class="form-control" accept="image/*" required>
+          <div class="form-text text-muted small mt-2">
+            📌 <strong>Tip:</strong> Please ensure the photo is clear, well-lit, and focused inside the oral cavity.
+          </div>
         </div>
-        <button type="submit" class="btn btn-primary-red w-100 fw-semibold">Analyze Image</button>
+
+        <button type="submit" class="btn btn-primary-red w-100 fw-semibold btn-lg shadow-sm">
+          Analyze Image
+        </button>
+
       </form>
+
     </div>
   </div>
 </div>

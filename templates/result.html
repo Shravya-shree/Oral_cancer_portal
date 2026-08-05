@@ -1,35 +1,98 @@
-{% extends 'base.html' %}
-{% block title %}Screening Result - OralCare Portal{% endblock %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diagnostic Report #{{ scan.id }}</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f4f6f9; font-family: 'Segoe UI', Arial, sans-serif; }
+        .report-card { background: #ffffff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: none; }
+        .badge-danger-custom { background-color: #f8d7da; color: #842029; border: 1px solid #f5c2c7; }
+        .badge-success-custom { background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
+        .scan-img { border-radius: 8px; border: 1px solid #e0e0e0; max-height: 280px; width: 100%; object-fit: cover; }
+        .btn-qr { background-color: #0d6efd; color: #ffffff; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9rem; }
+        .btn-qr:hover { background-color: #0b5ed7; color: #ffffff; }
+    </style>
+</head>
+<body>
 
-{% block content %}
-<div class="row justify-content-center">
-  <div class="col-md-8">
-    <div class="card p-4">
-      <h3 class="fw-bold border-bottom pb-2">Diagnostic Summary</h3>
-      <div class="row mt-3">
-        <div class="col-md-6">
-          <p><strong>Patient:</strong> {{ scan.patient_name }}</p>
-          <p><strong>Email:</strong> {{ scan.email }}</p>
-          <p><strong>Date:</strong> {{ scan.scan_date }}</p>
-          <p><strong>Analysis Output:</strong></p>
-          {% if scan.result == 'Cancer Detected' %}
-            <div class="alert alert-danger fw-bold"><i class="bi bi-exclamation-triangle"></i> Indication Found</div>
-          {% elif scan.result == 'Clear' %}
-            <div class="alert alert-success fw-bold"><i class="bi bi-check-circle"></i> Clear</div>
-          {% else %}
-            <div class="alert alert-warning fw-bold"><i class="bi bi-question-circle"></i> Invalid Image - Re-upload Required</div>
-          {% endif %}
+    <!-- Top Navigation Bar -->
+    <nav class="navbar navbar-dark bg-primary shadow-sm mb-4">
+        <div class="container">
+            <span class="navbar-brand mb-0 h1 fw-bold">🔬 AI Oral Health Screener</span>
+            {% if session.get('user_id') %}
+                <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-light">Dashboard</a>
+            {% else %}
+                <span class="badge bg-light text-primary fw-bold">Public Verification View</span>
+            {% endif %}
         </div>
-        <div class="col-md-6 text-center">
-          <img src="{{ url_for('static', filename='uploads/' + scan.image) }}" class="img-fluid rounded border mb-2" style="max-height: 200px;">
-          <br>
-          <img src="{{ url_for('static', filename='uploads/' + scan.qr) }}" class="img-thumbnail" style="width: 100px;">
+    </nav>
+
+    <!-- Report Container -->
+    <div class="container my-2 my-md-4" style="max-width: 800px;">
+        <div class="report-card p-3 p-md-5">
+            
+            <!-- Header Section with Generate QR Button -->
+            <div class="d-flex justify-content-between align-items-center border-bottom pb-3 mb-4">
+                <div>
+                    <h2 class="h3 text-dark fw-bold mb-1">Oral Cavity Diagnostic Report</h2>
+                    <p class="text-muted mb-0 small">Scan ID: <strong>#{{ scan.id }}</strong></p>
+                </div>
+                <div>
+                    <a href="{{ url_for('view_qr', scan_id=scan.id) }}" class="btn btn-qr shadow-sm">
+                        📱 Generate QR
+                    </a>
+                </div>
+            </div>
+
+            <!-- Patient Information Grid -->
+            <div class="bg-light p-3 rounded-3 mb-4">
+                <h6 class="text-uppercase text-secondary fw-bold mb-3" style="font-size: 0.8rem; letter-spacing: 0.5px;">Patient Details & Metadata</h6>
+                <div class="row">
+                    <div class="col-sm-6 mb-2">
+                        <span class="text-muted">Patient Name:</span> <strong class="text-dark d-block d-sm-inline">{{ scan.patient_name }}</strong>
+                    </div>
+                    <div class="col-sm-6 mb-2">
+                        <span class="text-muted">Uploaded On:</span> <strong class="text-dark d-block d-sm-inline">{{ scan.scan_date }}</strong>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Primary Result Banner -->
+            <div class="p-3 mb-4 rounded-3 text-center fw-bold fs-5 {% if scan.result == 'Cancer Detected' %}badge-danger-custom{% else %}badge-success-custom{% endif %}">
+                {% if scan.result == 'Cancer Detected' %}
+                    ⚠️ Primary Finding: Cancer Detected
+                {% else %}
+                    ✅ Primary Finding: Clear / Normal Oral Mucosa
+                {% endif %}
+            </div>
+
+            <!-- Side-by-Side Images -->
+            <div class="row my-4">
+                <div class="{% if scan.gradcam_image %}col-md-6{% else %}col-12{% endif %} mb-3 text-center">
+                    <h6 class="text-secondary fw-bold mb-2">Uploaded Oral Cavity Image</h6>
+                    <img src="{{ url_for('static', filename='uploads/' + scan.image) }}" class="scan-img img-fluid shadow-sm" alt="Uploaded Intraoral Scan">
+                </div>
+
+                {% if scan.gradcam_image %}
+                <div class="col-md-6 mb-3 text-center">
+                    <h6 class="text-danger fw-bold mb-2">Grad-CAM Region Focus Heatmap</h6>
+                    <img src="{{ url_for('static', filename='uploads/' + scan.gradcam_image) }}" class="scan-img img-fluid shadow-sm" alt="Grad-CAM Overlay Focus">
+                </div>
+                {% endif %}
+            </div>
+
+            <hr class="my-4">
+
+            <!-- Footer Medical Disclaimer -->
+            <div class="alert alert-secondary mb-0 py-2 px-3 small text-muted">
+                <strong>Medical Disclaimer:</strong> This document is an automated AI screening summary produced for decision support. It does not replace formal clinical biopsy or physical examination by a specialist practitioner.
+            </div>
+
         </div>
-      </div>
-      <div class="mt-4 border-top pt-3 text-end">
-        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Return to Dashboard</a>
-      </div>
     </div>
-  </div>
-</div>
-{% endblock %}
+
+</body>
+</html>
