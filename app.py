@@ -4,6 +4,7 @@ import numpy as np
 import qrcode
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torchvision import models, transforms
 from PIL import Image
 from flask import Flask, render_template, request, redirect, url_for, session, flash
@@ -24,8 +25,8 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 def get_db_connection():
     return mysql.connector.connect(
         host="localhost",
-        user="",
-        password="",           # Add your MySQL password if set
+        user="root",           # Added 'root'
+        password="1234",       # Added your password so it doesn't crash!
         database="oral_cancer_db"
     )
 
@@ -44,72 +45,114 @@ def load_pytorch_model():
 model = load_pytorch_model()
 
 # -------------------------------------------------------------
-# 3. OPENCV BLUR DETECTION & IMAGE VALIDATION
+# GRAD-CAM IMPLEMENTATION CLASS
 # -------------------------------------------------------------
-def is_image_blurry(image_path, threshold=15.0): # Lowered from 80.0 to 15.0
-    """
-    Detects motion blur or out-of-focus images using Laplacian Variance.
-    Returns True if score < threshold (blurry/shaky).
-    """
+class GradCAM:
+    def __init__(self, model, target_layer):
+        self.model = model
+        self.target_layer = target_layer
+        self.gradients = None
+        self.activations = None
+        
+        # Hooks to capture gradients and activations during the forward/backward pass
+        self.target_layer.register_forward_hook(self.save_activation)
+        self.target_layer.register_full_backward_hook(self.save_gradient)
+
+    def save_activation(self, module, input, output):
+        self.activations = output
+
+    def save_gradient(self, module, grad_input, grad_output):
+        self.gradients = grad_output[0]
+
+    def generate(self, input_tensor, target_class):
+        input_tensor.requires_grad_(True)
+        self.model.zero_grad()
+        
+        output = self.model(input_tensor)
+        loss = output[0, target_class]
+        loss.backward()
+
+        pooled_gradients = torch.mean(self.gradients, dim=[0, 2, 3])
+        activations = self.activations.detach().clone()
+        for i in range(activations.size(1)):
+            activations[:, i, :, :] *= pooled_gradients[i]
+            
+        heatmap = torch.mean(activations, dim=1).squeeze()
+        heatmap = F.relu(heatmap)
+        heatmap /= (torch.max(heatmap) + 1e-8)
+        
+        return heatmap.cpu().numpy()
+
+# -------------------------------------------------------------
+# 3. OPENCV BLUR DETECTION & STRICT IMAGE VALIDATION
+# -------------------------------------------------------------
+def is_image_blurry(image_path, laplacian_thresh=12.0):
     img = cv2.imread(image_path)
     if img is None:
         return True, 0.0
-    
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    score = cv2.Laplacian(gray, cv2.CV_64F).var()
-    return score < threshold, round(score, 2)
+
+    resized = cv2.resize(img, (500, 500))
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+    laplacian_score = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+    print(f"\n[DEBUG] Standardized Sharpness Score: {round(laplacian_score, 2)}")
+    is_blurry = laplacian_score < laplacian_thresh
+    return is_blurry, round(laplacian_score, 2)
+
+
 def validate_oral_cavity_image(image_path):
     """
-    Stricter HSV validation to verify the image contains inner oral cavity tissue.
-    Filters out non-oral objects, clothing, faces, or random scenes.
+    UPGRADED VALIDATION: Checks for red tissue, but REJECTS if it finds 
+    'forbidden colors' like green or blue (e.g., fruit bowls, landscapes).
     """
     img = cv2.imread(image_path)
     if img is None:
         return False
 
-    # Convert to HSV color space
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-    # Oral mucosal tissue HSV ranges (Pinkish / Crimson / Deep Red)
-    lower_red1 = np.array([0, 60, 50])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([155, 60, 50])
-    upper_red2 = np.array([180, 255, 255])
-
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    tissue_mask = mask1 | mask2
-
     total_pixels = img.shape[0] * img.shape[1]
+
+    # 1. TISSUE CHECK: Must contain red/pink/crimson hues
+    lower_red1 = np.array([0, 40, 40])
+    upper_red1 = np.array([15, 255, 255])
+    lower_red2 = np.array([155, 40, 40])
+    upper_red2 = np.array([180, 255, 255])
+    
+    tissue_mask = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(hsv, lower_red2, upper_red2)
     tissue_ratio = np.sum(tissue_mask > 0) / total_pixels
 
-    # Oral cavity photos must have at least 25% mucosal red/pink coverage
-    if tissue_ratio < 0.25:
+    # 2. FORBIDDEN COLOR CHECK: Mouths do NOT contain green, blue, cyan, or bright purple
+    lower_forbidden = np.array([30, 40, 40])
+    upper_forbidden = np.array([145, 255, 255])
+    
+    forbidden_mask = cv2.inRange(hsv, lower_forbidden, upper_forbidden)
+    forbidden_ratio = np.sum(forbidden_mask > 0) / total_pixels
+
+    # Rule A: If it doesn't have enough red/pink (less than 15%) -> Reject
+    if tissue_ratio < 0.15:
+        print(f"[REJECTED] Not enough tissue color. Ratio: {round(tissue_ratio, 3)}")
         return False
 
-    # Check color saturation (prevents flat red clothing or solid red objects)
-    mean_saturation = np.mean(hsv[:, :, 1])
-    if mean_saturation < 40 or mean_saturation > 230:
+    # Rule B: If it has obvious non-oral colors (more than 5% green/blue) -> Reject
+    if forbidden_ratio > 0.05:
+        print(f"[REJECTED] Non-oral colors detected (Green/Blue/etc). Ratio: {round(forbidden_ratio, 3)}")
         return False
 
     return True
 
+
 def predict_image(image_path):
-    # 🔍 STEP A: Check for Blur / Camera Shake (Threshold set to 15.0 for oral tissue)
-    blurry, score = is_image_blurry(image_path, threshold=15.0)
-    print(f"\n[DEBUG] Image Sharpness Score: {score}\n")
-    
+    # 🛑 1. STRICT BLUR GATEKEEPER
+    blurry, score = is_image_blurry(image_path, laplacian_thresh=12.0)
     if blurry:
-        return "Blurry Image"
+        print(f"[REJECTED] Image flagged as Blurry with score: {score}")
+        return "Blurry Image" 
 
-    # ... rest of your validation logic
-   
-
-    # 🔍 STEP B: Check for Oral Cavity Color/Tissue Criteria
+    # 🛑 2. UPGRADED ORAL CAVITY TISSUE CHECK
     if not validate_oral_cavity_image(image_path):
         return "Invalid Image"
 
-    # 🚀 STEP C: PyTorch AI Model Inference
+    # 🚀 3. RUN AI MODEL INFERENCE (Only reached if image is a clear mouth)
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -119,18 +162,42 @@ def predict_image(image_path):
     img = Image.open(image_path).convert('RGB')
     tensor = transform(img).unsqueeze(0)
 
-    with torch.no_grad():
-        outputs = model(tensor)
-        probs = torch.nn.functional.softmax(outputs, dim=1)
-        confidence, predicted = torch.max(probs, 1)
+    # NOTE: torch.no_grad() is removed so Grad-CAM can trace back the gradients
+    outputs = model(tensor)
+    probs = torch.nn.functional.softmax(outputs, dim=1)
+    confidence, predicted = torch.max(probs, 1)
 
     # 🎯 CONFIDENCE GATEKEEPER:
-    # If confidence is below 85% (0.85), treat as non-oral / invalid image
     if confidence.item() < 0.85:
         return "Invalid Image"
 
-    # Index 0: cancer, Index 1: non_cancer
-    return "Cancer Detected" if predicted.item() == 0 else "Clear"
+    is_cancer = (predicted.item() == 0)
+
+    if is_cancer:
+        # Generate Grad-CAM Heatmap for Cancer Cases
+        target_layer = model.features[-1]
+        grad_cam = GradCAM(model, target_layer)
+        heatmap = grad_cam.generate(tensor, target_class=0)
+        
+        orig_img = cv2.imread(image_path)
+        heatmap_resized = cv2.resize(heatmap, (orig_img.shape[1], orig_img.shape[0]))
+        heatmap_resized = np.uint8(255 * heatmap_resized)
+        colormap = cv2.applyColorMap(heatmap_resized, cv2.COLORMAP_JET)
+        
+        # Superimpose heatmap over original image
+        overlay = cv2.addWeighted(orig_img, 0.6, colormap, 0.4, 0)
+        
+        # Save heatmap file alongside the original image with a "gradcam_" prefix
+        dir_name = os.path.dirname(image_path)
+        file_name = os.path.basename(image_path)
+        gradcam_path = os.path.join(dir_name, f"gradcam_{file_name}")
+        cv2.imwrite(gradcam_path, overlay)
+        
+        return "Cancer Detected"
+    else:
+        return "Clear"
+
+
 # -------------------------------------------------------------
 # 4. FLASK ROUTES
 # -------------------------------------------------------------
@@ -211,6 +278,7 @@ def dashboard():
 
     recent_scan = scans[0] if scans else None
     return render_template('dashboard.html', scans=scans, recent_scan=recent_scan)
+
 @app.route('/scan', methods=['GET', 'POST'])
 def scan():
     if 'user_id' not in session:
@@ -304,5 +372,4 @@ def error():
     return render_template('error.html')
 
 if __name__ == '__main__':
-    # host='0.0.0.0' allows connections from smartphones/other PCs on the local Wi-Fi
     app.run(host='0.0.0.0', port=5000, debug=True)

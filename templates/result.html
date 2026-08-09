@@ -3,30 +3,63 @@
 
 {% block content %}
 <div class="row justify-content-center">
-  <div class="col-md-8">
-    <div class="card p-4">
-      <h3 class="fw-bold border-bottom pb-2">Diagnostic Summary</h3>
-      <div class="row mt-3">
-        <div class="col-md-6">
-          <p><strong>Patient:</strong> {{ scan.patient_name }}</p>
-          <p><strong>Email:</strong> {{ scan.email }}</p>
-          <p><strong>Date:</strong> {{ scan.scan_date }}</p>
-          <p><strong>Analysis Output:</strong></p>
+  <div class="col-md-9">
+    <div class="card p-4 shadow-sm border-0" style="border-radius: 12px;">
+      <h3 class="fw-bold border-bottom pb-3 mb-4">Diagnostic Summary</h3>
+      
+      <div class="row">
+        <!-- Text Details Column -->
+        <div class="col-md-5">
+          <p class="mb-2"><strong>Patient:</strong> {{ scan.patient_name }}</p>
+          <p class="mb-2"><strong>Email:</strong> {{ scan.email }}</p>
+          <p class="mb-3"><strong>Date:</strong> {{ scan.scan_date }}</p>
+          
+          <p class="mb-2"><strong>Analysis Output:</strong></p>
           {% if scan.result == 'Cancer Detected' %}
-            <div class="alert alert-danger fw-bold"><i class="bi bi-exclamation-triangle"></i> Indication Found</div>
+            <div class="alert alert-danger fw-bold shadow-sm">
+              <i class="bi bi-exclamation-triangle-fill me-2"></i> Indication Found
+            </div>
           {% elif scan.result == 'Clear' %}
-            <div class="alert alert-success fw-bold"><i class="bi bi-check-circle"></i> Clear</div>
+            <div class="alert alert-success fw-bold shadow-sm">
+              <i class="bi bi-check-circle-fill me-2"></i> Clear
+            </div>
           {% else %}
-            <div class="alert alert-warning fw-bold"><i class="bi bi-question-circle"></i> Invalid Image - Re-upload Required</div>
+            <div class="alert alert-warning fw-bold shadow-sm">
+              <i class="bi bi-question-circle-fill me-2"></i> Invalid Image - Re-upload
+            </div>
           {% endif %}
         </div>
-        <div class="col-md-6 text-center">
-          <img src="{{ url_for('static', filename='uploads/' + scan.image) }}" class="img-fluid rounded border mb-2" style="max-height: 200px;">
-          <br>
-          <img src="{{ url_for('static', filename='uploads/' + scan.qr) }}" class="img-thumbnail" style="width: 100px;">
+
+        <!-- Images Column -->
+        <div class="col-md-7 text-center border-start">
+          <div class="d-flex flex-wrap justify-content-center gap-3 mb-4">
+            
+            <!-- Original Image -->
+            <div>
+              <p class="small fw-semibold text-muted mb-1">Original Image</p>
+              <img src="{{ url_for('static', filename='uploads/' + scan.image) }}" class="img-fluid rounded border shadow-sm" style="max-height: 160px; object-fit: cover;">
+            </div>
+            
+            <!-- Grad-CAM (Only shows if Cancer is detected) -->
+            {% if scan.result == 'Cancer Detected' %}
+            <div>
+              <p class="small fw-bold text-danger mb-1">AI Region Focus</p>
+              <img src="{{ url_for('static', filename='uploads/gradcam_' + scan.image) }}" class="img-fluid rounded border border-danger shadow-sm" style="max-height: 160px; object-fit: cover;">
+            </div>
+            {% endif %}
+
+          </div>
+
+          <!-- QR Code -->
+          <div>
+            <p class="small fw-semibold text-muted mb-1">Scan to Share Report</p>
+            <img src="{{ url_for('static', filename='uploads/' + scan.qr) }}" class="img-thumbnail shadow-sm" style="width: 90px;">
+          </div>
         </div>
       </div>
+
       <div class="mt-4 border-top pt-3 text-end">
+        <a href="{{ url_for('scan') }}" class="btn btn-outline-primary me-2">New Scan</a>
         <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Return to Dashboard</a>
       </div>
     </div>

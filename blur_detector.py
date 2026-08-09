@@ -1,30 +1,27 @@
 import cv2
+import numpy as np
 
-def is_image_blurry(image_path, threshold=80.0):
+def is_image_blurry(image_path, laplacian_thresh=12.0):
     """
-    Detects if an image is blurry using the Laplacian Variance method.
-    
-    Parameters:
-        image_path (str): Path to the uploaded image file.
-        threshold (float): Sharpness threshold. Default is 80.0.
-                          - Below 80 = Blurry/Shaky (Reject)
-                          - Above 80 = Clear & Focused (Accept)
-                          
-    Returns:
-        tuple: (is_blurry: bool, sharpness_score: float)
+    Standardized Blur Detector tuned specifically for Oral Cavity tissue.
+    1. Resizes image to fixed 500x500 so resolution doesn't distort scores.
+    2. Uses Laplacian Variance with a realistic threshold for smooth mucosal tissue.
     """
-    # 1. Read the image from disk
-    image = cv2.imread(image_path)
-    if image is None:
-        return True, 0.0  # File couldn't be loaded or path is invalid
+    img = cv2.imread(image_path)
+    if img is None:
+        return True, 0.0
+
+    # 1. Resize to fixed dimensions (500x500) for resolution consistency
+    resized = cv2.resize(img, (500, 500))
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+
+    # 2. Calculate Laplacian Variance on the standardized image
+    laplacian_score = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+    print(f"\n[DEBUG] Standardized Sharpness Score: {round(laplacian_score, 2)} (Cutoff: {laplacian_thresh})")
+
+    # True camera shake / extreme blur scores < 8.0
+    # Clear oral tissue comfortably scores between 18.0 and 45.0
+    is_blurry = laplacian_score < laplacian_thresh
     
-    # 2. Convert to Grayscale (edge detection works on intensity)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # 3. Calculate the Laplacian Variance (Sharpness Score)
-    sharpness_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-    
-    # 4. Check if the score falls below our threshold
-    is_blurry = sharpness_score < threshold
-    
-    return is_blurry, round(sharpness_score, 2)
+    return is_blurry, round(laplacian_score, 2)
