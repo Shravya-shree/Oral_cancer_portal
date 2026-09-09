@@ -4,22 +4,27 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Scan QR Code - #{{ scan.id }}</title>
-    <!-- Bootstrap 5 CSS -->
+    <!-- Bootstrap 5 CSS & Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
     <style>
-        body { background-color: #f4f6f9; font-family: 'Segoe UI', Arial, sans-serif; }
-        .qr-card { max-width: 480px; margin: 50px auto; background: #ffffff; padding: 40px 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); text-align: center; }
-        .qr-box { background: #ffffff; border: 2px solid #e9ecef; border-radius: 12px; padding: 15px; display: inline-block; }
+        body { background-color: #fcf1f3; font-family: 'Segoe UI', Arial, sans-serif; min-height: 100vh; }
+        .navbar { background-color: #ffffff; border-bottom: 1px solid #f1d7dc; }
+        .navbar-brand { font-weight: 700; color: #d63384 !important; }
+        .qr-card { max-width: 480px; margin: 40px auto; background: #ffffff; padding: 35px 30px; border-radius: 16px; border: 1px solid #f1d7dc; box-shadow: 0 8px 30px rgba(214,51,132,0.08); text-align: center; }
+        .qr-box { background: #ffffff; border: 2px dashed #d63384; border-radius: 12px; padding: 15px; display: inline-block; }
         .qr-img { width: 220px; height: 220px; object-fit: contain; }
     </style>
 </head>
 <body>
 
     <!-- Top Navigation Bar -->
-    <nav class="navbar navbar-dark bg-primary shadow-sm mb-4">
+    <nav class="navbar px-4 shadow-sm mb-4">
         <div class="container">
-            <span class="navbar-brand mb-0 h1 fw-bold">🔬 AI Oral Health Screener</span>
-            <a href="{{ url_for('result', scan_id=scan.id) }}" class="btn btn-sm btn-light">Back to Report</a>
+            <span class="navbar-brand mb-0 h1"><i class="bi bi-heart-pulse-fill me-2"></i>OralCare Portal</span>
+            <a href="{{ url_for('result', scan_id=scan.id) }}" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-arrow-left me-1"></i>Back to Report
+            </a>
         </div>
     </nav>
 
@@ -29,25 +34,27 @@
             <h3 class="fw-bold text-dark mb-1">Diagnostic Report QR Code</h3>
             <p class="text-muted small mb-4">Scan ID: <strong>#{{ scan.id }}</strong> | Patient: <strong>{{ scan.patient_name }}</strong></p>
 
+            {% set qr_image = (scan.qr if scan.qr else qr_filename) %}
+
             <!-- QR Display Box -->
             <div class="qr-box shadow-sm my-2">
-                <img src="{{ url_for('static', filename='uploads/' + scan.qr) }}" alt="Report QR Code" class="qr-img">
+                <img src="{{ url_for('static', filename='uploads/' + qr_image) }}" alt="Report QR Code" class="qr-img">
             </div>
 
             <p class="text-muted small mt-3 mb-4">
-                Scanning this QR code using any smartphone camera will grant public access to verify this diagnostic report.
+                Scanning this QR code using any smartphone camera will open the official public diagnostic verification report.
             </p>
 
             <!-- Action Buttons -->
             <div class="d-grid gap-2 col-11 mx-auto">
                 <!-- Download Button -->
-                <a href="{{ url_for('static', filename='uploads/' + scan.qr) }}" download="Oral_Scan_QR_#{{ scan.id }}.png" class="btn btn-primary btn-lg fs-6 fw-bold shadow-sm">
-                    ⬇️ Download QR Code
+                <a href="{{ url_for('static', filename='uploads/' + qr_image) }}" download="Oral_Scan_QR_#{{ scan.id }}.png" class="btn btn-danger btn-lg fs-6 fw-bold shadow-sm">
+                    <i class="bi bi-download me-2"></i>Download QR Code
                 </a>
 
                 <!-- Back Link -->
                 <a href="{{ url_for('result', scan_id=scan.id) }}" class="btn btn-outline-secondary mt-2">
-                    ⬅️ Return to Diagnostic Report
+                    <i class="bi bi-arrow-left me-1"></i>Return to Diagnostic Report
                 </a>
             </div>
 

@@ -1,116 +1,230 @@
-
 import os
 import cv2
+import time
+import socket
+import sqlite3
 import numpy as np
 import qrcode
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torchvision import models, transforms
-from PIL import Image
-from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
+from PIL import Image, ImageOps, ImageFile
+from flask import Flask, render_template, request, redirect, url_for, session, flash
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-import mysql.connector
 
-# Modular Helper Imports
-from blur_detector import is_image_blurry
-from gradcam import generate_gradcam_overlay
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 app = Flask(__name__)
 app.secret_key = 'oral_cancer_secret_key_prod'
-
-# -------------------------------------------------------------
-# DISABLE TEMPLATE & STATIC FILE CACHING
-# Prevents browser/Flask from serving cached form fields
-# -------------------------------------------------------------
+app.config['UPLOAD_FOLDER'] = os.path.join('static', 'uploads')
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB limit
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
-app.config['UPLOAD_FOLDER'] = os.path.join('static', 'uploads')
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB max upload limit
+DB_PATH = 'oral_cancer.db'
+
+# Set this to your permanent public URL when hosted (or keep empty for dynamic detection)
+PUBLIC_PRODUCTION_URL = "https://qt2p8d8b-5000.inc1.devtunnels.ms"
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # -------------------------------------------------------------
-# GLOBAL PUBLIC URL CONFIGURATION
-# Update this with your active VS Code DevTunnel or ngrok URL
-# -------------------------------------------------------------
-PUBLIC_URL = "https://qt2p8d8b-5000.inc1.devtunnels.ms"
-
-# -------------------------------------------------------------
-# 1. DATABASE CONNECTION HELPER (WITH AUTOCOMMIT)
+# 1. DATABASE CONNECTION & AUTO-MIGRATION (SQLITE)
 # -------------------------------------------------------------
 def get_db_connection():
-    return mysql.connector.connect(
-        host="localhost",
-        port=3306,
-        user="root",
-        password="1239",           # MySQL password
-        database="oral_cancer_db",
-        autocommit=True            # Guarantees user registration persists immediately
-    )
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def auto_migrate_database():
+    """Initializes local SQLite schema automatically."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS scans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            patient_name TEXT,
+            email TEXT DEFAULT NULL,
+            result TEXT,
+            image TEXT,
+            qr TEXT DEFAULT '',
+            scan_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+    print("[+] SQLite schema initialized successfully.")
+
+auto_migrate_database()
 
 # -------------------------------------------------------------
-# 2. MODEL DEFINITION & LOADING (MobileNetV2)
+# 2. REACHABLE URL RESOLVER FOR QR CODES
+# -------------------------------------------------------------
+def get_accessible_base_url():
+    if PUBLIC_PRODUCTION_URL and PUBLIC_PRODUCTION_URL.strip():
+        return PUBLIC_PRODUCTION_URL.rstrip('/')
+
+    forwarded_host = request.headers.get('X-Forwarded-Host')
+    forwarded_proto = request.headers.get('X-Forwarded-Proto', 'https')
+    if forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}"
+
+    raw_host = request.host_url.rstrip('/')
+    if "127.0.0.1" in raw_host or "localhost" in raw_host:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            lan_ip = s.getsockname()[0]
+            s.close()
+            port = request.environ.get('SERVER_PORT', '5000')
+            return f"http://{lan_ip}:{port}"
+        except Exception:
+            return raw_host
+
+    return raw_host
+
+# -------------------------------------------------------------
+# 3. MODEL DEFINITION & LOADING (MobileNetV2)
 # -------------------------------------------------------------
 def load_pytorch_model():
     model = models.mobilenet_v2(weights=None)
+    model.classifier[0] = nn.Dropout(p=0.35)
     model.classifier[1] = nn.Linear(model.last_channel, 2)
     model_path = 'oral_cancer_model.pth'
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+        print("[+] PyTorch MobileNetV2 weights loaded successfully.")
+    else:
+        print(f"[!] Warning: Model weights '{model_path}' not found.")
     model.eval()
     return model
 
 model = load_pytorch_model()
 
 # -------------------------------------------------------------
-# 3. OPENCV ORAL CAVITY TISSUE VALIDATION
+# 4. GRAD-CAM
 # -------------------------------------------------------------
-def validate_oral_cavity_image(image_path):
-    img = cv2.imread(image_path)
-    if img is None:
+class GradCAM:
+    def __init__(self, target_model, target_layer):
+        self.model = target_model
+        self.target_layer = target_layer
+        self.gradients = None
+        self.activations = None
+        self.hooks = []
+        
+        self.hooks.append(self.target_layer.register_forward_hook(self._save_activation))
+        self.hooks.append(self.target_layer.register_full_backward_hook(self._save_gradient))
+
+    def _save_activation(self, module, input, output):
+        self.activations = output
+
+    def _save_gradient(self, module, grad_input, grad_output):
+        self.gradients = grad_output[0]
+
+    def generate(self, input_tensor, target_class=0):
+        try:
+            input_tensor.requires_grad_(True)
+            self.model.zero_grad()
+            
+            output = self.model(input_tensor)
+            loss = output[0, target_class]
+            loss.backward()
+
+            pooled_gradients = torch.mean(self.gradients, dim=[0, 2, 3])
+            activations = self.activations.detach().clone()
+            for i in range(activations.size(1)):
+                activations[:, i, :, :] *= pooled_gradients[i]
+                
+            heatmap = torch.mean(activations, dim=1).squeeze()
+            heatmap = F.relu(heatmap)
+            max_val = torch.max(heatmap)
+            if max_val > 0:
+                heatmap /= max_val
+            
+            return heatmap.cpu().numpy()
+        finally:
+            self.remove_hooks()
+
+    def remove_hooks(self):
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks.clear()
+
+# -------------------------------------------------------------
+# 5. OPENCV IMAGE GATEKEEPERS
+# -------------------------------------------------------------
+def load_and_normalize_image(image_path):
+    try:
+        pil_img = Image.open(image_path)
+        pil_img = ImageOps.exif_transpose(pil_img).convert('RGB')
+        cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        return pil_img, cv_img
+    except Exception as e:
+        print(f"[DEBUG] Image load error: {e}")
+        return None, None
+
+def is_image_blurry(cv_img, laplacian_thresh=4.0):
+    if cv_img is None:
+        return True, 0.0
+    resized = cv2.resize(cv_img, (500, 500))
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+    laplacian_score = cv2.Laplacian(gray, cv2.CV_64F).var()
+    is_blur = laplacian_score < laplacian_thresh
+    return is_blur, round(laplacian_score, 2)
+
+def validate_oral_cavity_image(cv_img):
+    if cv_img is None:
         return False
 
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
+    total_pixels = cv_img.shape[0] * cv_img.shape[1]
 
-    lower_red1 = np.array([0, 50, 40])
-    upper_red1 = np.array([12, 240, 240])
-    lower_red2 = np.array([160, 50, 40])
-    upper_red2 = np.array([180, 240, 240])
-
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    tissue_mask = mask1 | mask2
-
-    total_pixels = img.shape[0] * img.shape[1]
-    tissue_ratio = np.sum(tissue_mask > 0) / total_pixels
-
-    if tissue_ratio < 0.20 or tissue_ratio > 0.88:
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 100, 200)
+    edge_density = np.sum(edges > 0) / total_pixels
+    if edge_density > 0.22:
         return False
 
     mean_saturation = np.mean(hsv[:, :, 1])
-    if mean_saturation > 190 or mean_saturation < 45:
+    if mean_saturation < 15.0:
         return False
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 100, 200)
-    edge_density = np.sum(edges > 0) / total_pixels
-    
-    if edge_density > 0.11:
+    lower_red1, upper_red1 = np.array([0, 30, 30]), np.array([15, 255, 255])
+    lower_red2, upper_red2 = np.array([150, 30, 30]), np.array([180, 255, 255])
+    tissue_mask = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(hsv, lower_red2, upper_red2)
+    tissue_ratio = np.sum(tissue_mask > 0) / total_pixels
+    if tissue_ratio < 0.08:
+        return False
+
+    lower_forbidden, upper_forbidden = np.array([35, 40, 40]), np.array([140, 255, 255])
+    forbidden_mask = cv2.inRange(hsv, lower_forbidden, upper_forbidden)
+    forbidden_ratio = np.sum(forbidden_mask > 0) / total_pixels
+    if forbidden_ratio > 0.15:
         return False
 
     return True
 
-# -------------------------------------------------------------
-# 4. PREDICTION PIPELINE
-# -------------------------------------------------------------
 def predict_image(image_path):
-    blurry, score = is_image_blurry(image_path, threshold=15.0)
+    pil_img, cv_img = load_and_normalize_image(image_path)
+    if pil_img is None or cv_img is None:
+        return "Invalid Image"
+
+    blurry, score = is_image_blurry(cv_img, laplacian_thresh=4.0)
     if blurry:
         return "Blurry Image"
 
-    if not validate_oral_cavity_image(image_path):
+    if not validate_oral_cavity_image(cv_img):
         return "Invalid Image"
 
     transform = transforms.Compose([
@@ -119,66 +233,48 @@ def predict_image(image_path):
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    img = Image.open(image_path).convert('RGB')
-    tensor = transform(img).unsqueeze(0)
+    device = next(model.parameters()).device
+    tensor = transform(pil_img).unsqueeze(0).to(device)
 
     with torch.no_grad():
         outputs = model(tensor)
         probs = torch.nn.functional.softmax(outputs, dim=1)
         confidence, predicted = torch.max(probs, 1)
 
-    if confidence.item() < 0.85:
+    conf_score = round(confidence.item() * 100, 2)
+    pred_class = predicted.item()
+
+    if confidence.item() < 0.50:
         return "Invalid Image"
 
-    return "Cancer Detected" if predicted.item() == 0 else "Clear"
+    if pred_class == 0:
+        try:
+            target_layer = model.features[-1]
+            grad_cam = GradCAM(model, target_layer)
+            heatmap = grad_cam.generate(tensor.clone(), target_class=0)
+
+            heatmap_resized = cv2.resize(heatmap, (cv_img.shape[1], cv_img.shape[0]))
+            heatmap_resized = np.uint8(255 * heatmap_resized)
+            colormap = cv2.applyColorMap(heatmap_resized, cv2.COLORMAP_JET)
+            overlay = cv2.addWeighted(cv_img, 0.6, colormap, 0.4, 0)
+
+            dir_name = os.path.dirname(image_path)
+            file_name = os.path.basename(image_path)
+            gradcam_path = os.path.join(dir_name, f"gradcam_{file_name}")
+            cv2.imwrite(gradcam_path, overlay)
+        except Exception as e:
+            print(f"[!] Grad-CAM error: {e}")
+
+        return "Cancer Detected"
+    else:
+        return "Clear"
 
 # -------------------------------------------------------------
-# 5. FLASK ROUTES
+# 6. FLASK ROUTES
 # -------------------------------------------------------------
 @app.route('/')
 def index():
     return render_template('index.html')
-
-@app.route('/db-debug')
-def db_debug():
-    """Diagnostic route to test direct database insertion without email."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        # 1. Fetch server metadata
-        cursor.execute("SELECT @@port AS port, @@hostname AS host, @@datadir AS datadir")
-        server_info = cursor.fetchone()
-        
-        # 2. Insert a test user
-        test_user = f"debug_user_{os.urandom(2).hex()}"
-        cursor.execute("INSERT INTO users (username, password) VALUES (%s, %s)", 
-                       (test_user, 'test1234'))
-        new_id = cursor.lastrowid
-        
-        # 3. Read total users count
-        cursor.execute("SELECT COUNT(*) AS total FROM users")
-        user_count = cursor.fetchone()['total']
-        
-        cursor.close()
-        conn.close()
-        
-        return f"""
-        <div style="font-family: monospace; padding: 20px;">
-            <h2>✅ Database Write Test Succeeded!</h2>
-            <p><b>Inserted User ID:</b> {new_id} ({test_user})</p>
-            <p><b>Total Users in DB:</b> {user_count}</p>
-            <hr>
-            <h3>MySQL Connection Details Used by Flask:</h3>
-            <ul>
-                <li><b>Port:</b> {server_info['port']}</li>
-                <li><b>Host:</b> {server_info['host']}</li>
-                <li><b>Data Directory:</b> {server_info['datadir']}</li>
-            </ul>
-        </div>
-        """
-    except Exception as e:
-        return f"<h2 style='color:red;'>❌ DB Connection Error:</h2><p>{e}</p>"
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -191,37 +287,21 @@ def register():
             return render_template('register.html')
 
         hashed = generate_password_hash(password)
-
+        conn = get_db_connection()
         try:
-            conn = get_db_connection()
-            cursor = conn.cursor(dictionary=True)
-
-            # 1. Explicitly check if username exists
-            cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
-            if cursor.fetchone():
-                flash('Username is already taken. Please choose another.', 'warning')
-                cursor.close()
-                conn.close()
-                return render_template('register.html')
-
-            # 2. Insert new user record (Without email)
-            cursor.execute(
-                "INSERT INTO users (username, password) VALUES (%s, %s)",
-                (username, hashed)
-            )
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed))
             conn.commit()
-            cursor.close()
-            conn.close()
-
             flash('Registration successful. Please log in.', 'success')
             return redirect(url_for('login'))
-
-        except mysql.connector.Error as err:
-            print(f"\n[!] MYSQL REGISTER ERROR: {err}\n")
-            flash(f'Database error: {err.msg}', 'danger')
+        except sqlite3.IntegrityError:
+            flash('Username already exists. Please choose another.', 'danger')
+            return render_template('register.html')
         except Exception as e:
-            print(f"\n[!] UNEXPECTED REGISTER ERROR: {e}\n")
-            flash('An unexpected error occurred during registration.', 'danger')
+            flash(f'Registration error: {e}', 'danger')
+            return render_template('register.html')
+        finally:
+            conn.close()
 
     return render_template('register.html')
 
@@ -230,25 +310,22 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
-
+        conn = get_db_connection()
         try:
-            conn = get_db_connection()
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
             user = cursor.fetchone()
-            cursor.close()
-            conn.close()
 
             if user and check_password_hash(user['password'], password):
                 session['user_id'] = user['id']
                 session['username'] = user['username']
+                session['user'] = user['username']
                 flash('Welcome back!', 'success')
                 return redirect(url_for('dashboard'))
             else:
                 flash('Invalid credentials.', 'danger')
-        except Exception as e:
-            print(f"\n[!] LOGIN ERROR: {e}\n")
-            flash('Database connection failed. Check terminal logs.', 'danger')
+        finally:
+            conn.close()
 
     return render_template('login.html')
 
@@ -263,42 +340,30 @@ def dashboard():
     if 'user_id' not in session:
         return redirect(url_for('login'))
 
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM scans WHERE user_id = %s ORDER BY scan_date DESC", (session['user_id'],))
-        scans = cursor.fetchall()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        scans = []
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scans WHERE user_id = ? ORDER BY scan_date DESC", (session['user_id'],))
+    rows = cursor.fetchall()
+    scans = [dict(r) for r in rows]
+    for s in scans:
+        s['date'] = str(s.get('scan_date', 'Recorded'))[:16]
+    conn.close()
 
     recent_scan = scans[0] if scans else None
-    return render_template('dashboard.html', scans=scans, recent_scan=recent_scan)
+    return render_template('dashboard.html', scans=scans, recent_scan=recent_scan, user=session.get('username'))
 
 @app.route('/scan', methods=['GET', 'POST'])
 def scan():
     if 'user_id' not in session:
         return redirect(url_for('login'))
 
-    patient_name = session.get('username', 'Patient')
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT username FROM users WHERE id = %s", (session['user_id'],))
-        row = cursor.fetchone()
-        if row:
-            patient_name = row.get('username') or patient_name
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        pass
-
     if request.method == 'POST':
-        file = request.files.get('file')
+        patient_name = request.form.get('patient_name') or request.form.get('name') or session.get('username', 'Patient')
+        email = request.form.get('email', '')
+        file = request.files.get('file') or request.files.get('image')
 
         if not file or file.filename == '':
-            flash('⚠️ Please select an image file.', 'warning')
+            flash('⚠️ Please select an image file to analyze.', 'warning')
             return redirect(url_for('scan'))
 
         filename = secure_filename(file.filename)
@@ -316,127 +381,96 @@ def scan():
         if result == "Invalid Image":
             if os.path.exists(filepath):
                 os.remove(filepath)
-            flash('⚠️ Invalid image uploaded. Please upload a clear photo focused inside the oral cavity.', 'danger')
+            flash('⚠️ Invalid image uploaded. Please ensure photo is centered inside the oral cavity.', 'warning')
             return redirect(url_for('scan'))
 
-        # Grad-CAM Heatmap Generation
-        gradcam_filename = None
-        if result == "Cancer Detected":
-            gradcam_filename = f"cam_{filename}"
-            gradcam_path = os.path.join(app.config['UPLOAD_FOLDER'], gradcam_filename)
-            cam_success = generate_gradcam_overlay(model, filepath, gradcam_path)
-            if not cam_success:
-                gradcam_filename = None
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO scans (user_id, patient_name, email, result, image, qr) VALUES (?, ?, ?, ?, ?, ?)",
+            (session['user_id'], patient_name, email, result, filename, "")
+        )
+        conn.commit()
+        scan_id = cursor.lastrowid
+        conn.close()
 
-        # Save Scan Record directly (Without email column)
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO scans (user_id, patient_name, result, image, gradcam_image, qr) VALUES (%s, %s, %s, %s, %s, %s)",
-                (session['user_id'], patient_name, result, filename, gradcam_filename, "")
-            )
-            conn.commit()
-            scan_id = cursor.lastrowid
+        return redirect(url_for('result', scan_id=scan_id))
 
-            # Build public report URL
-            base_url = PUBLIC_URL.rstrip('/')
-            report_url = f"{base_url}/report/{scan_id}"
-            
-            qr_filename = f"qr_{scan_id}.png"
-            qr_path = os.path.join(app.config['UPLOAD_FOLDER'], qr_filename)
-            
-            qr_img = qrcode.make(report_url)
-            qr_img.save(qr_path)
-
-            cursor.execute("UPDATE scans SET qr = %s WHERE id = %s", (qr_filename, scan_id))
-            conn.commit()
-
-            cursor.close()
-            conn.close()
-
-            return redirect(url_for('result', scan_id=scan_id))
-        except Exception as e:
-            print(f"\n[!] MYSQL SCAN ERROR: {e}\n")
-            return redirect(url_for('error', code=500, message='Failed to save scan record to database.'))
-
-    return render_template('scan.html', patient_name=patient_name)
+    return render_template('scan.html', patient_name=session.get('username', 'Patient'))
 
 @app.route('/result/<int:scan_id>')
 def result(scan_id):
     if 'user_id' not in session:
         return redirect(url_for('login'))
 
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM scans WHERE id = %s AND user_id = %s", (scan_id, session['user_id']))
-        scan_record = cursor.fetchone()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        scan_record = None
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scans WHERE id = ? AND user_id = ?", (scan_id, session['user_id']))
+    row = cursor.fetchone()
+    conn.close()
 
-    if not scan_record:
-        return redirect(url_for('error', code='404', message='Scan record not found.'))
+    if not row:
+        return redirect(url_for('error'))
 
-    return render_template('result.html', scan=scan_record)
+    scan_record = dict(row)
+    scan_record['date'] = str(scan_record.get('scan_date', 'Recorded'))[:16]
 
-# -------------------------------------------------------------
-# QR CODE VIEW ROUTE
-# -------------------------------------------------------------
+    return render_template('result.html', scan=scan_record, record=scan_record)
+
 @app.route('/qr/<int:scan_id>')
 def view_qr(scan_id):
     if 'user_id' not in session:
         return redirect(url_for('login'))
 
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM scans WHERE id = %s AND user_id = %s", (scan_id, session['user_id']))
-        scan_record = cursor.fetchone()
-        cursor.close()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scans WHERE id = ? AND user_id = ?", (scan_id, session['user_id']))
+    row = cursor.fetchone()
+
+    if not row:
         conn.close()
-    except Exception as e:
-        scan_record = None
+        return redirect(url_for('error'))
 
-    if not scan_record:
-        return redirect(url_for('error', code='404', message='Scan record not found.'))
+    scan_record = dict(row)
+    scan_record['date'] = str(scan_record.get('scan_date', 'Recorded'))[:16]
 
-    return render_template('qr_page.html', scan=scan_record)
+    qr_filename = f"qr_{scan_id}.png"
+    qr_path = os.path.join(app.config['UPLOAD_FOLDER'], qr_filename)
 
-# -------------------------------------------------------------
-# PUBLIC REPORT ROUTE
-# -------------------------------------------------------------
+    base_url = get_accessible_base_url()
+    report_url = f"{base_url}/report/{scan_id}"
+    qr_img = qrcode.make(report_url)
+    qr_img.save(qr_path)
+
+    cursor.execute("UPDATE scans SET qr = ? WHERE id = ?", (qr_filename, scan_id))
+    conn.commit()
+    conn.close()
+
+    scan_record['qr'] = qr_filename
+    cache_id = int(time.time())
+
+    return render_template('qr_page.html', scan=scan_record, record=scan_record, qr_filename=qr_filename, cache_id=cache_id)
+
 @app.route('/report/<int:scan_id>')
 def public_report(scan_id):
-    scan_record = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM scans WHERE id = %s", (scan_id,))
-        scan_record = cursor.fetchone()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        return f"<div style='padding:20px; font-family:sans-serif;'><h2>Database Connection Error</h2><p>{e}</p></div>", 500
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scans WHERE id = ?", (scan_id,))
+    row = cursor.fetchone()
+    conn.close()
 
-    if not scan_record:
-        return f"<div style='padding:20px; font-family:sans-serif;'><h2>Report Not Found</h2><p>Diagnostic record #{scan_id} does not exist in the database.</p></div>", 404
+    if not row:
+        return "<h3 style='padding:20px; font-family:sans-serif;'>Diagnostic Report Not Found.</h3>", 404
 
-    return render_template('result.html', scan=scan_record)
+    scan_record = dict(row)
+    scan_record['date'] = str(scan_record.get('scan_date', 'Recorded'))[:16]
+
+    return render_template('result.html', scan=scan_record, record=scan_record)
 
 @app.route('/error')
 def error():
-    code = request.args.get('code', '500')
-    message = request.args.get('message', 'An unexpected error occurred.')
-    
-    try:
-        status_code = int(code)
-    except ValueError:
-        status_code = 500
-
-    return render_template('error.html', error_code=status_code, error_message=message), status_code
+    return render_template('error.html')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)

@@ -1,98 +1,68 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Diagnostic Report #{{ scan.id }}</title>
-    <!-- Bootstrap 5 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { background-color: #f4f6f9; font-family: 'Segoe UI', Arial, sans-serif; }
-        .report-card { background: #ffffff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: none; }
-        .badge-danger-custom { background-color: #f8d7da; color: #842029; border: 1px solid #f5c2c7; }
-        .badge-success-custom { background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
-        .scan-img { border-radius: 8px; border: 1px solid #e0e0e0; max-height: 280px; width: 100%; object-fit: cover; }
-        .btn-qr { background-color: #0d6efd; color: #ffffff; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9rem; }
-        .btn-qr:hover { background-color: #0b5ed7; color: #ffffff; }
-    </style>
-</head>
-<body>
+{% extends 'base.html' %}
+{% block title %}Screening Result - OralCare Portal{% endblock %}
 
-    <!-- Top Navigation Bar -->
-    <nav class="navbar navbar-dark bg-primary shadow-sm mb-4">
-        <div class="container">
-            <span class="navbar-brand mb-0 h1 fw-bold">🔬 AI Oral Health Screener</span>
-            {% if session.get('user_id') %}
-                <a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-light">Dashboard</a>
-            {% else %}
-                <span class="badge bg-light text-primary fw-bold">Public Verification View</span>
-            {% endif %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-9">
+    <div class="card p-4 shadow-sm border-0" style="border-radius: 12px;">
+      <h3 class="fw-bold border-bottom pb-3 mb-4">Diagnostic Summary</h3>
+      
+      <div class="row">
+        <!-- Text Details Column -->
+        <div class="col-md-5">
+          <p class="mb-2"><strong>Patient:</strong> {{ (scan.patient_name if scan else record.patient_name) }}</p>
+          <p class="mb-2"><strong>Email:</strong> {{ (scan.email if scan else record.email) }}</p>
+          <p class="mb-3"><strong>Date:</strong> {{ (scan.date if scan and scan.date else (record.date if record and record.date else 'Recorded')) }}</p>
+          
+          <p class="mb-2"><strong>Analysis Output:</strong></p>
+          {% set outcome = (scan.result if scan else record.result) %}
+          {% if outcome == 'Cancer Detected' %}
+            <div class="alert alert-danger fw-bold shadow-sm">
+              <i class="bi bi-exclamation-triangle-fill me-2"></i> Indication Found
+            </div>
+          {% elif outcome == 'Clear' %}
+            <div class="alert alert-success fw-bold shadow-sm">
+              <i class="bi bi-check-circle-fill me-2"></i> Clear
+            </div>
+          {% else %}
+            <div class="alert alert-warning fw-bold shadow-sm">
+              <i class="bi bi-question-circle-fill me-2"></i> Invalid Image - Re-upload
+            </div>
+          {% endif %}
         </div>
-    </nav>
 
-    <!-- Report Container -->
-    <div class="container my-2 my-md-4" style="max-width: 800px;">
-        <div class="report-card p-3 p-md-5">
+        <!-- Images Column (QR code removed from here) -->
+        <div class="col-md-7 text-center border-start">
+          {% set img_file = (scan.image if scan else record.image) %}
+          
+          <div class="d-flex flex-wrap justify-content-center gap-3">
+            <!-- Original Image -->
+            <div>
+              <p class="small fw-semibold text-muted mb-1">Original Image</p>
+              <img src="{{ url_for('static', filename='uploads/' + img_file) }}" class="img-fluid rounded border shadow-sm" style="max-height: 180px; object-fit: cover;">
+            </div>
             
-            <!-- Header Section with Generate QR Button -->
-            <div class="d-flex justify-content-between align-items-center border-bottom pb-3 mb-4">
-                <div>
-                    <h2 class="h3 text-dark fw-bold mb-1">Oral Cavity Diagnostic Report</h2>
-                    <p class="text-muted mb-0 small">Scan ID: <strong>#{{ scan.id }}</strong></p>
-                </div>
-                <div>
-                    <a href="{{ url_for('view_qr', scan_id=scan.id) }}" class="btn btn-qr shadow-sm">
-                        📱 Generate QR
-                    </a>
-                </div>
+            <!-- Grad-CAM (Only for Cancer Cases) -->
+            {% if outcome == 'Cancer Detected' %}
+            <div>
+              <p class="small fw-bold text-danger mb-1">AI Region Focus</p>
+              <img src="{{ url_for('static', filename='uploads/gradcam_' + img_file) }}" class="img-fluid rounded border border-danger shadow-sm" style="max-height: 180px; object-fit: cover;">
             </div>
-
-            <!-- Patient Information Grid -->
-            <div class="bg-light p-3 rounded-3 mb-4">
-                <h6 class="text-uppercase text-secondary fw-bold mb-3" style="font-size: 0.8rem; letter-spacing: 0.5px;">Patient Details & Metadata</h6>
-                <div class="row">
-                    <div class="col-sm-6 mb-2">
-                        <span class="text-muted">Patient Name:</span> <strong class="text-dark d-block d-sm-inline">{{ scan.patient_name }}</strong>
-                    </div>
-                    <div class="col-sm-6 mb-2">
-                        <span class="text-muted">Uploaded On:</span> <strong class="text-dark d-block d-sm-inline">{{ scan.scan_date }}</strong>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Primary Result Banner -->
-            <div class="p-3 mb-4 rounded-3 text-center fw-bold fs-5 {% if scan.result == 'Cancer Detected' %}badge-danger-custom{% else %}badge-success-custom{% endif %}">
-                {% if scan.result == 'Cancer Detected' %}
-                    ⚠️ Primary Finding: Cancer Detected
-                {% else %}
-                    ✅ Primary Finding: Clear / Normal Oral Mucosa
-                {% endif %}
-            </div>
-
-            <!-- Side-by-Side Images -->
-            <div class="row my-4">
-                <div class="{% if scan.gradcam_image %}col-md-6{% else %}col-12{% endif %} mb-3 text-center">
-                    <h6 class="text-secondary fw-bold mb-2">Uploaded Oral Cavity Image</h6>
-                    <img src="{{ url_for('static', filename='uploads/' + scan.image) }}" class="scan-img img-fluid shadow-sm" alt="Uploaded Intraoral Scan">
-                </div>
-
-                {% if scan.gradcam_image %}
-                <div class="col-md-6 mb-3 text-center">
-                    <h6 class="text-danger fw-bold mb-2">Grad-CAM Region Focus Heatmap</h6>
-                    <img src="{{ url_for('static', filename='uploads/' + scan.gradcam_image) }}" class="scan-img img-fluid shadow-sm" alt="Grad-CAM Overlay Focus">
-                </div>
-                {% endif %}
-            </div>
-
-            <hr class="my-4">
-
-            <!-- Footer Medical Disclaimer -->
-            <div class="alert alert-secondary mb-0 py-2 px-3 small text-muted">
-                <strong>Medical Disclaimer:</strong> This document is an automated AI screening summary produced for decision support. It does not replace formal clinical biopsy or physical examination by a specialist practitioner.
-            </div>
-
+            {% endif %}
+          </div>
         </div>
-    </div>
+      </div>
 
-</body>
-</html>
+      <!-- Action Buttons with Generate QR Code -->
+      <div class="mt-4 border-top pt-3 text-end">
+        {% set current_scan_id = (scan.id if scan else record.id) %}
+        <a href="{{ url_for('view_qr', scan_id=current_scan_id) }}" class="btn btn-danger me-2">
+          <i class="bi bi-qr-code me-1"></i> Generate QR Code
+        </a>
+        <a href="{{ url_for('scan') }}" class="btn btn-outline-primary me-2">New Scan</a>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Return to Dashboard</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
