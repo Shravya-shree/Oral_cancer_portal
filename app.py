@@ -25,8 +25,8 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 DB_PATH = 'oral_cancer.db'
 
-# Set this to your permanent public URL when hosted (or keep empty for dynamic detection)
-PUBLIC_PRODUCTION_URL = "https://qt2p8d8b-5000.inc1.devtunnels.ms"
+# Automatically use Render's live URL or fallback to your live domain
+PUBLIC_PRODUCTION_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://oral-cancer-portal.onrender.com')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
@@ -72,14 +72,17 @@ auto_migrate_database()
 # 2. REACHABLE URL RESOLVER FOR QR CODES
 # -------------------------------------------------------------
 def get_accessible_base_url():
+    # 1. Check Render's injected live URL or configured domain
     if PUBLIC_PRODUCTION_URL and PUBLIC_PRODUCTION_URL.strip():
         return PUBLIC_PRODUCTION_URL.rstrip('/')
 
+    # 2. Fall back to forwarded reverse proxy headers (HTTPS support)
     forwarded_host = request.headers.get('X-Forwarded-Host')
     forwarded_proto = request.headers.get('X-Forwarded-Proto', 'https')
     if forwarded_host:
         return f"{forwarded_proto}://{forwarded_host}"
 
+    # 3. Fall back to local LAN IP if testing offline
     raw_host = request.host_url.rstrip('/')
     if "127.0.0.1" in raw_host or "localhost" in raw_host:
         try:
