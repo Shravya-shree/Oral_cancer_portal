@@ -17,7 +17,10 @@ from werkzeug.utils import secure_filename
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 app = Flask(__name__)
-app.secret_key = 'oral_cancer_secret_key_prod'
+app.secret_key = os.environ.get(
+    'SECRET_KEY',
+    'oral_cancer_secret_key_dev'
+)
 app.config['UPLOAD_FOLDER'] = os.path.join('static', 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB limit
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -26,7 +29,11 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 DB_PATH = 'oral_cancer.db'
 
 # Automatically use Render's live URL or fallback to your live domain
-PUBLIC_PRODUCTION_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://oral-cancer-portal.onrender.com')
+# Railway automatically provides the public domain
+PUBLIC_PRODUCTION_URL = os.environ.get(
+    'RAILWAY_PUBLIC_DOMAIN',
+    ''
+)
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
@@ -72,30 +79,40 @@ auto_migrate_database()
 # 2. REACHABLE URL RESOLVER FOR QR CODES
 # -------------------------------------------------------------
 def get_accessible_base_url():
-    # 1. Check Render's injected live URL or configured domain
+    # Railway public domain
     if PUBLIC_PRODUCTION_URL and PUBLIC_PRODUCTION_URL.strip():
-        return PUBLIC_PRODUCTION_URL.rstrip('/')
+        domain = PUBLIC_PRODUCTION_URL.strip().rstrip('/')
 
-    # 2. Fall back to forwarded reverse proxy headers (HTTPS support)
+        if domain.startswith('http://') or domain.startswith('https://'):
+            return domain
+
+        return f"https://{domain}"
+
+    # Reverse proxy fallback
     forwarded_host = request.headers.get('X-Forwarded-Host')
     forwarded_proto = request.headers.get('X-Forwarded-Proto', 'https')
+
     if forwarded_host:
         return f"{forwarded_proto}://{forwarded_host}"
 
-    # 3. Fall back to local LAN IP if testing offline
+    # Local fallback
     raw_host = request.host_url.rstrip('/')
+
     if "127.0.0.1" in raw_host or "localhost" in raw_host:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             lan_ip = s.getsockname()[0]
             s.close()
+
             port = request.environ.get('SERVER_PORT', '5000')
             return f"http://{lan_ip}:{port}"
+
         except Exception:
             return raw_host
 
     return raw_host
+
 
 # -------------------------------------------------------------
 # 3. MODEL DEFINITION & LOADING (MobileNetV2)
