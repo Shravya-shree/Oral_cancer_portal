@@ -1,9 +1,10 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-Flask
-Werkzeug
+torch==2.2.2
+torchvision==0.17.2
+flask==3.0.2
 gunicorn
-torch
-torchvision
+pillow
+numpy
 opencv-python-headless
-Pillow
+reportlab
 qrcode
