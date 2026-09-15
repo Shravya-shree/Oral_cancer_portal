@@ -12,18 +12,6 @@
         <p class="text-muted small">Logged in as: <strong>{{ patient_name }}</strong></p>
       </div>
 
-      <!-- Flash Alert Messages -->
-      {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-          {% for category, message in messages %}
-            <div class="alert alert-{{ category }} alert-dismissible fade show py-2 small" role="alert">
-              {{ message }}
-              <button type="button" class="btn-close py-2" data-bs-dismiss="alert" aria-label="Close"></button>
-            </div>
-          {% endfor %}
-        {% endif %}
-      {% endwith %}
-
       <!-- Direct Image Upload Form -->
       <form action="{{ url_for('scan') }}" method="POST" enctype="multipart/form-data" id="scanForm">
         
@@ -84,7 +72,14 @@
                 <i class="bi bi-x-circle"></i> Remove
               </button>
             </div>
-            <img id="imagePreview" src="#" alt="Selected Image Preview" class="img-fluid rounded-3 border shadow-sm" style="max-height: 220px;">
+
+            <img 
+              id="imagePreview" 
+              src="#" 
+              alt="Selected Image Preview" 
+              class="img-fluid rounded-3 border shadow-sm" 
+              style="max-height: 220px;"
+            >
           </div>
 
           <div class="form-text text-muted small mt-2">
@@ -106,20 +101,25 @@
 <script>
   function handleFileSelect(event) {
     const file = event.target.files[0];
+
     if (file) {
       // Transfer the chosen file into the main Flask form input
       const dataTransfer = new DataTransfer();
       dataTransfer.items.add(file);
+
       const mainInput = document.getElementById('fileInput');
       mainInput.files = dataTransfer.files;
 
       // Update filename text and render preview image
       document.getElementById('fileNameDisplay').innerText = file.name;
+
       const reader = new FileReader();
+
       reader.onload = function(e) {
         document.getElementById('imagePreview').src = e.target.result;
         document.getElementById('imagePreviewContainer').classList.remove('d-none');
       };
+
       reader.readAsDataURL(file);
     }
   }
