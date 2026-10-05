@@ -372,7 +372,7 @@ def prepare_gatekeeper_image(cv_img):
 
 def is_image_blurry(
     cv_img,
-    laplacian_thresh=4.0
+    laplacian_thresh=1.5
 ):
 
     if cv_img is None:
@@ -382,9 +382,9 @@ def is_image_blurry(
 
     height, width = cv_img.shape[:2]
 
-    if max(height, width) > 500:
+    if max(height, width) > 800:
 
-        scale = 500 / float(
+        scale = 800 / float(
             max(height, width)
         )
 
@@ -417,6 +417,12 @@ def is_image_blurry(
     is_blur = (
         laplacian_score < laplacian_thresh
     )
+    print(
+        f"[DEBUG] Laplacian sharpness score: "
+        f"{laplacian_score:.2f} | "
+        f"Threshold: {laplacian_thresh:.2f} | "
+        f"Blurry: {is_blur}"
+    )
 
     return (
         is_blur,
@@ -426,12 +432,20 @@ def is_image_blurry(
 
 def validate_oral_cavity_image(cv_img):
 
-    if cv_img is None:
+    if (
+        cv_img is None
+        or not isinstance(cv_img, np.ndarray)
+        or cv_img.ndim != 3
+        or cv_img.shape[2] != 3
+    ):
         return False
 
     small_img = prepare_gatekeeper_image(
         cv_img
     )
+
+    if small_img is None or small_img.size == 0:
+        return False
 
     hsv = cv2.cvtColor(
         small_img,
@@ -442,6 +456,9 @@ def validate_oral_cavity_image(cv_img):
         small_img.shape[0]
         * small_img.shape[1]
     )
+
+    if total_pixels <= 0:
+        return False
 
     gray = cv2.cvtColor(
         small_img,
@@ -459,18 +476,63 @@ def validate_oral_cavity_image(cv_img):
         / total_pixels
     )
 
-    if edge_density > 0.22:
-        return False
-
-    mean_saturation = np.mean(
-        hsv[:, :, 1]
+    # Reject flat images such as paper, blank backgrounds,
+    # and solid-color images.
+    gray_std = float(
+        np.std(gray)
     )
 
-    if mean_saturation < 15.0:
+    contrast_range = float(
+        np.percentile(gray, 95)
+        - np.percentile(gray, 5)
+    )
+
+    if gray_std < 14.0:
         return False
 
+    if contrast_range < 35.0:
+        return False
+
+    # Reject overly complex high-frequency scenes such as
+    # text documents, foliage, and outdoor landscapes.
+    laplacian_variance = float(
+        cv2.Laplacian(
+            gray,
+            cv2.CV_64F
+        ).var()
+    )
+
+    if edge_density > 0.28:
+        return False
+
+    if (
+        edge_density > 0.20
+        and laplacian_variance > 3000.0
+    ):
+        return False
+
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+
+    blue_channel, green_channel, red_channel = cv2.split(
+        small_img
+    )
+
+    blue16 = blue_channel.astype(
+        np.int16
+    )
+
+    green16 = green_channel.astype(
+        np.int16
+    )
+
+    red16 = red_channel.astype(
+        np.int16
+    )
+
+    # Pink/red mucosal HSV ranges.
     lower_red1 = np.array(
-        [0, 30, 30]
+        [0, 35, 45]
     )
 
     upper_red1 = np.array(
@@ -478,14 +540,14 @@ def validate_oral_cavity_image(cv_img):
     )
 
     lower_red2 = np.array(
-        [150, 30, 30]
+        [165, 25, 45]
     )
 
     upper_red2 = np.array(
-        [180, 255, 255]
+        [179, 255, 255]
     )
 
-    tissue_mask = (
+    red_hsv_mask = (
         cv2.inRange(
             hsv,
             lower_red1,
@@ -497,36 +559,99 @@ def validate_oral_cavity_image(cv_img):
             lower_red2,
             upper_red2
         )
+    ) > 0
+
+    # Require red to be stronger than blue and at least
+    # comparable to green.
+    warm_red_mask = (
+        (red16 >= green16 - 5)
+        & (red16 > blue16 + 8)
+        & (red16 >= 60)
     )
 
-    tissue_ratio = (
-        np.sum(tissue_mask > 0)
+    tissue_mask = (
+        red_hsv_mask
+        & warm_red_mask
+    )
+
+    tissue_ratio = float(
+        np.count_nonzero(tissue_mask)
         / total_pixels
     )
 
-    if tissue_ratio < 0.08:
+    # At least 20% of the image must contain realistic
+    # pink/red mucosal tissue.
+    if tissue_ratio < 0.20:
         return False
 
-    lower_forbidden = np.array(
-        [35, 40, 40]
-    )
-
-    upper_forbidden = np.array(
-        [140, 255, 255]
-    )
-
-    forbidden_mask = cv2.inRange(
+    # Reject dominant blue and green regions.
+    blue_green_mask = cv2.inRange(
         hsv,
-        lower_forbidden,
-        upper_forbidden
+        np.array([35, 40, 35]),
+        np.array([140, 255, 255])
+    ) > 0
+
+    # Reject dominant yellow regions.
+    yellow_mask = cv2.inRange(
+        hsv,
+        np.array([20, 50, 45]),
+        np.array([38, 255, 255])
+    ) > 0
+
+    # Reject cool-white backgrounds.
+    cool_white_mask = (
+        (saturation < 30)
+        & (value > 175)
+        & (blue16 >= red16 + 8)
+        & (green16 >= red16 + 3)
     )
 
-    forbidden_ratio = (
-        np.sum(forbidden_mask > 0)
+    # Reject very dark gray images.
+    dark_gray_mask = (
+        (saturation < 35)
+        & (value < 65)
+    )
+
+    blue_green_ratio = float(
+        np.count_nonzero(blue_green_mask)
         / total_pixels
     )
 
-    if forbidden_ratio > 0.15:
+    yellow_ratio = float(
+        np.count_nonzero(yellow_mask)
+        / total_pixels
+    )
+
+    cool_white_ratio = float(
+        np.count_nonzero(cool_white_mask)
+        / total_pixels
+    )
+
+    dark_gray_ratio = float(
+        np.count_nonzero(dark_gray_mask)
+        / total_pixels
+    )
+
+    if blue_green_ratio > 0.20:
+        return False
+
+    if yellow_ratio > 0.18:
+        return False
+
+    if cool_white_ratio > 0.60:
+        return False
+
+    if dark_gray_ratio > 0.40:
+        return False
+
+    non_oral_ratio = (
+        blue_green_ratio
+        + yellow_ratio
+        + cool_white_ratio
+        + dark_gray_ratio
+    )
+
+    if non_oral_ratio > 0.70:
         return False
 
     return True
@@ -547,11 +672,11 @@ def predict_image(image_path):
         return "Invalid Image"
 
     # ---------------------------------------------------------
-    # BLUR CHECK
+    # BLUR CHECK (Threshold 1.5 triggers ONLY on full blur)
     # ---------------------------------------------------------
     blurry, score = is_image_blurry(
         cv_img,
-        laplacian_thresh=4.0
+        laplacian_thresh=1.5
     )
 
     if blurry:
@@ -585,11 +710,10 @@ def predict_image(image_path):
     )
 
     # ---------------------------------------------------------
-    # SINGLE MODEL FORWARD PASS
+    # MODEL FORWARD PASS + OPTIONAL GRAD-CAM
     #
-    # IMPORTANT:
-    # The same output is reused for Grad-CAM.
-    # This avoids running MobileNetV2 twice.
+    # Classification runs without autograd. A positive prediction
+    # gets a second gradient-enabled pass for Grad-CAM.
     # ---------------------------------------------------------
     gradcam = None
 
@@ -604,35 +728,43 @@ def predict_image(image_path):
 
         try:
 
-            model.zero_grad(
-                set_to_none=True
-            )
+            model.eval()
 
-            outputs = model(
-                tensor
-            )
+            # Classification does not require gradients.
+            # Grad-CAM is enabled separately for class 0.
+            with torch.no_grad():
 
-            probs = torch.softmax(
-                outputs,
-                dim=1
-            )
+                outputs = model(
+                    tensor
+                )
 
-            confidence, predicted = torch.max(
-                probs,
-                1
-            )
+                probs = torch.softmax(
+                    outputs,
+                    dim=1
+                )
 
-            confidence_value = (
-                confidence.item()
-            )
+                confidence, predicted = torch.max(
+                    probs,
+                    1
+                )
 
-            pred_class = (
-                predicted.item()
-            )
+                confidence_value = (
+                    confidence.item()
+                )
+
+                pred_class = (
+                    predicted.item()
+                )
 
             conf_score = round(
                 confidence_value * 100,
                 2
+            )
+
+            print(
+                f"[DEBUG] Softmax Probs: "
+                f"{probs.detach().cpu().numpy().round(4).tolist()}, "
+                f"Pred Class: {pred_class}"
             )
 
             print(
@@ -643,7 +775,7 @@ def predict_image(image_path):
             # -------------------------------------------------
             # CONFIDENCE CHECK
             # -------------------------------------------------
-            if confidence_value < 0.50:
+            if confidence_value < 0.60:
 
                 gradcam.remove_hooks()
 
@@ -654,12 +786,18 @@ def predict_image(image_path):
             # -------------------------------------------------
             if pred_class == 0:
 
-                heatmap = (
-                    gradcam.generate_from_output(
-                        outputs,
-                        target_class=0
+                with torch.enable_grad():
+
+                    gradcam_outputs = model(
+                        tensor
                     )
-                )
+
+                    heatmap = (
+                        gradcam.generate_from_output(
+                            gradcam_outputs,
+                            target_class=0
+                        )
+                    )
 
                 if heatmap is not None:
 
@@ -1053,9 +1191,8 @@ def scan():
             )
 
             return redirect(
-                url_for('scan')
+                url_for('scan') 
             )
-
         filename = secure_filename(
             file.filename
         )
@@ -1078,8 +1215,8 @@ def scan():
                 os.remove(filepath)
 
             flash(
-                '⚠️ Image is too blurry or shaky. Please keep steady and upload a focused photo.',
-                'danger'
+                '⚠️ The uploaded image is completely blurry or out of focus. Please upload a clear photo.',
+                'warning'
             )
 
             return redirect(
@@ -1093,7 +1230,7 @@ def scan():
                 os.remove(filepath)
 
             flash(
-                '⚠️ Invalid image uploaded. Please ensure photo is centered inside the oral cavity.',
+                '⚠️ Invalid image. Please upload a photo centered inside the oral cavity.',
                 'warning'
             )
 
