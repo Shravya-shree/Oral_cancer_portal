@@ -40,10 +40,10 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 DB_PATH = 'oral_cancer.db'
 
-# Railway public domain
+# Public domain (Render or Railway)
 PUBLIC_PRODUCTION_URL = os.environ.get(
-    'RAILWAY_PUBLIC_DOMAIN',
-    ''
+    'RENDER_EXTERNAL_URL',
+    os.environ.get('RAILWAY_PUBLIC_DOMAIN', '')
 )
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -334,11 +334,6 @@ def load_and_normalize_image(image_path):
 
 def prepare_gatekeeper_image(cv_img):
 
-    """
-    Creates a smaller copy only for blur/oral-cavity checks.
-    The original image is preserved for the report and Grad-CAM.
-    """
-
     if cv_img is None:
         return None
 
@@ -431,7 +426,11 @@ def is_image_blurry(
 
 
 def validate_oral_cavity_image(cv_img):
-
+    """
+    Validates that the upload is a genuine intraoral cavity image.
+    Strictly filters out external skin (palms, wrists, arms, face)
+    and non-biological objects (watches, rooms, documents).
+    """
     if (
         cv_img is None
         or not isinstance(cv_img, np.ndarray)
@@ -440,218 +439,126 @@ def validate_oral_cavity_image(cv_img):
     ):
         return False
 
-    small_img = prepare_gatekeeper_image(
-        cv_img
-    )
-
+    small_img = prepare_gatekeeper_image(cv_img)
     if small_img is None or small_img.size == 0:
         return False
 
-    hsv = cv2.cvtColor(
-        small_img,
-        cv2.COLOR_BGR2HSV
-    )
-
-    total_pixels = (
-        small_img.shape[0]
-        * small_img.shape[1]
-    )
-
+    total_pixels = small_img.shape[0] * small_img.shape[1]
     if total_pixels <= 0:
         return False
 
-    gray = cv2.cvtColor(
-        small_img,
-        cv2.COLOR_BGR2GRAY
-    )
-
-    edges = cv2.Canny(
-        gray,
-        100,
-        200
-    )
-
-    edge_density = (
-        np.sum(edges > 0)
-        / total_pixels
-    )
-
-    # Reject flat images such as paper, blank backgrounds,
-    # and solid-color images.
-    gray_std = float(
-        np.std(gray)
-    )
-
-    contrast_range = float(
-        np.percentile(gray, 95)
-        - np.percentile(gray, 5)
-    )
-
-    if gray_std < 14.0:
-        return False
-
-    if contrast_range < 35.0:
-        return False
-
-    # Reject overly complex high-frequency scenes such as
-    # text documents, foliage, and outdoor landscapes.
-    laplacian_variance = float(
-        cv2.Laplacian(
-            gray,
-            cv2.CV_64F
-        ).var()
-    )
-
-    if edge_density > 0.28:
-        return False
-
-    if (
-        edge_density > 0.20
-        and laplacian_variance > 3000.0
-    ):
-        return False
-
+    hsv = cv2.cvtColor(small_img, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
+    hue = hsv[:, :, 0]
     saturation = hsv[:, :, 1]
     value = hsv[:, :, 2]
 
-    blue_channel, green_channel, red_channel = cv2.split(
-        small_img
+    blue_channel, green_channel, red_channel = cv2.split(small_img)
+    blue16 = blue_channel.astype(np.int16)
+    green16 = green_channel.astype(np.int16)
+    red16 = red_channel.astype(np.int16)
+
+    # -------------------------------------------------------------
+    # 1. DETECT AND REJECT EXTERNAL SKIN (PALMS, WRISTS, ARMS, FACE)
+    # -------------------------------------------------------------
+    # External skin has a peach/tan/yellow-orange tone (Hue 9 to 25).
+    # Deep oral mucosa has a crimson tone (Hue 0-8 or 168-179).
+    dermal_skin_mask = (
+        (hue >= 9) & (hue <= 25) &
+        (saturation >= 20) & (saturation <= 165) &
+        (value >= 50) &
+        (red16 > green16) & (green16 >= blue16 - 10)
     )
+    dermal_skin_ratio = float(np.count_nonzero(dermal_skin_mask) / total_pixels)
 
-    blue16 = blue_channel.astype(
-        np.int16
+    # -------------------------------------------------------------
+    # 2. STRICT ORAL MUCOSAL TISSUE (VASCULARIZED RED/CRIMSON)
+    # -------------------------------------------------------------
+    deep_red_hsv = (
+        ((hue <= 8) | (hue >= 168)) &
+        (saturation >= 45) &
+        (value >= 40)
     )
-
-    green16 = green_channel.astype(
-        np.int16
+    deep_red_rgb = (
+        (red16 >= green16 + 18) &
+        (red16 >= blue16 + 24) &
+        (red16 >= 65)
     )
+    mucosa_mask = deep_red_hsv & deep_red_rgb
+    mucosa_ratio = float(np.count_nonzero(mucosa_mask) / total_pixels)
 
-    red16 = red_channel.astype(
-        np.int16
+    # -------------------------------------------------------------
+    # 3. TEETH / DENTAL ENAMEL DETECTION
+    # -------------------------------------------------------------
+    teeth_mask = (
+        (saturation < 40) &
+        (value >= 135) &
+        (red16 >= 110) & (green16 >= 110) & (blue16 >= 85) &
+        (np.abs(red16 - green16) <= 25)
     )
+    teeth_ratio = float(np.count_nonzero(teeth_mask) / total_pixels)
 
-    # Pink/red mucosal HSV ranges.
-    lower_red1 = np.array(
-        [0, 35, 45]
-    )
-
-    upper_red1 = np.array(
-        [15, 255, 255]
-    )
-
-    lower_red2 = np.array(
-        [165, 25, 45]
-    )
-
-    upper_red2 = np.array(
-        [179, 255, 255]
-    )
-
-    red_hsv_mask = (
-        cv2.inRange(
-            hsv,
-            lower_red1,
-            upper_red1
-        )
-        |
-        cv2.inRange(
-            hsv,
-            lower_red2,
-            upper_red2
-        )
-    ) > 0
-
-    # Require red to be stronger than blue and at least
-    # comparable to green.
-    warm_red_mask = (
-        (red16 >= green16 - 5)
-        & (red16 > blue16 + 8)
-        & (red16 >= 60)
-    )
-
-    tissue_mask = (
-        red_hsv_mask
-        & warm_red_mask
-    )
-
-    tissue_ratio = float(
-        np.count_nonzero(tissue_mask)
-        / total_pixels
-    )
-
-    # At least 20% of the image must contain realistic
-    # pink/red mucosal tissue.
-    if tissue_ratio < 0.20:
+    # Reject if dominated by hand/arm/palm skin without oral structures
+    if dermal_skin_ratio > 0.35 and mucosa_ratio < 0.12 and teeth_ratio < 0.04:
+        print(f"[GATEKEEPER] Rejected as external skin. Dermal: {dermal_skin_ratio:.2f}, Mucosa: {mucosa_ratio:.2f}")
         return False
 
-    # Reject dominant blue and green regions.
-    blue_green_mask = cv2.inRange(
-        hsv,
-        np.array([35, 40, 35]),
-        np.array([140, 255, 255])
-    ) > 0
-
-    # Reject dominant yellow regions.
-    yellow_mask = cv2.inRange(
-        hsv,
-        np.array([20, 50, 45]),
-        np.array([38, 255, 255])
-    ) > 0
-
-    # Reject cool-white backgrounds.
-    cool_white_mask = (
-        (saturation < 30)
-        & (value > 175)
-        & (blue16 >= red16 + 8)
-        & (green16 >= red16 + 3)
-    )
-
-    # Reject very dark gray images.
-    dark_gray_mask = (
-        (saturation < 35)
-        & (value < 65)
-    )
-
-    blue_green_ratio = float(
-        np.count_nonzero(blue_green_mask)
-        / total_pixels
-    )
-
-    yellow_ratio = float(
-        np.count_nonzero(yellow_mask)
-        / total_pixels
-    )
-
-    cool_white_ratio = float(
-        np.count_nonzero(cool_white_mask)
-        / total_pixels
-    )
-
-    dark_gray_ratio = float(
-        np.count_nonzero(dark_gray_mask)
-        / total_pixels
-    )
-
-    if blue_green_ratio > 0.20:
+    if dermal_skin_ratio > 0.55 and mucosa_ratio < 0.15:
+        print(f"[GATEKEEPER] Rejected: palm/hand skin dominates. Dermal: {dermal_skin_ratio:.2f}")
         return False
 
-    if yellow_ratio > 0.18:
+    # A valid oral image must contain either:
+    # - At least 12% vascularized oral mucosa, OR
+    # - At least 6% oral mucosa with visible teeth (>= 3%)
+    is_oral_composition = (mucosa_ratio >= 0.12) or (mucosa_ratio >= 0.06 and teeth_ratio >= 0.03)
+    if not is_oral_composition:
+        print(f"[GATEKEEPER] Insufficient oral features. Mucosa: {mucosa_ratio:.2f}, Teeth: {teeth_ratio:.2f}")
         return False
 
-    if cool_white_ratio > 0.60:
+    # -------------------------------------------------------------
+    # 4. TEXTURE & FLAT IMAGE CHECKS
+    # -------------------------------------------------------------
+    edges = cv2.Canny(gray, 100, 200)
+    edge_density = float(np.sum(edges > 0) / total_pixels)
+    gray_std = float(np.std(gray))
+    contrast_range = float(np.percentile(gray, 95) - np.percentile(gray, 5))
+
+    if gray_std < 14.0 or contrast_range < 35.0:
         return False
 
-    if dark_gray_ratio > 0.40:
+    laplacian_variance = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    if edge_density > 0.28:
+        return False
+    if edge_density > 0.20 and laplacian_variance > 3000.0:
         return False
 
-    non_oral_ratio = (
-        blue_green_ratio
-        + yellow_ratio
-        + cool_white_ratio
-        + dark_gray_ratio
+    # -------------------------------------------------------------
+    # 5. WATCH / METALLIC / NON-ORAL CHECKS
+    # -------------------------------------------------------------
+    metallic_mask = (
+        (saturation < 25) &
+        (value > 35) &
+        (np.abs(red16 - green16) < 14) &
+        (np.abs(green16 - blue16) < 14)
     )
+    metallic_ratio = float(np.count_nonzero(metallic_mask) / total_pixels)
+    if metallic_ratio > 0.38:
+        return False
 
-    if non_oral_ratio > 0.70:
+    # -------------------------------------------------------------
+    # 6. UNNATURAL / FORBIDDEN BACKGROUND COLORS
+    # -------------------------------------------------------------
+    blue_green_mask = cv2.inRange(hsv, np.array([35, 40, 35]), np.array([140, 255, 255])) > 0
+    yellow_mask = cv2.inRange(hsv, np.array([22, 50, 45]), np.array([34, 255, 255])) > 0
+    cool_white_mask = (saturation < 30) & (value > 175) & (blue16 >= red16 + 8) & (green16 >= red16 + 3)
+    dark_gray_mask = (saturation < 35) & (value < 65)
+
+    blue_green_ratio = float(np.count_nonzero(blue_green_mask) / total_pixels)
+    yellow_ratio = float(np.count_nonzero(yellow_mask) / total_pixels)
+    cool_white_ratio = float(np.count_nonzero(cool_white_mask) / total_pixels)
+    dark_gray_ratio = float(np.count_nonzero(dark_gray_mask) / total_pixels)
+
+    if blue_green_ratio > 0.18 or yellow_ratio > 0.18 or cool_white_ratio > 0.60 or dark_gray_ratio > 0.40:
         return False
 
     return True
@@ -672,7 +579,19 @@ def predict_image(image_path):
         return "Invalid Image"
 
     # ---------------------------------------------------------
-    # BLUR CHECK (Threshold 1.5 triggers ONLY on full blur)
+    # 1. ORAL CAVITY VALIDATION (Evaluated FIRST)
+    # Catches non-oral uploads (skin, palms, wrists, watches)
+    # ---------------------------------------------------------
+    if not validate_oral_cavity_image(cv_img):
+
+        print(
+            "[SCAN] Image rejected by oral cavity validation."
+        )
+
+        return "Invalid Image"
+
+    # ---------------------------------------------------------
+    # 2. BLUR CHECK (Runs ONLY on confirmed oral cavity images)
     # ---------------------------------------------------------
     blurry, score = is_image_blurry(
         cv_img,
@@ -682,21 +601,10 @@ def predict_image(image_path):
     if blurry:
 
         print(
-            f"[SCAN] Blurry image rejected. Score: {score}"
+            f"[SCAN] Blurry oral image rejected. Score: {score}"
         )
 
         return "Blurry Image"
-
-    # ---------------------------------------------------------
-    # ORAL CAVITY VALIDATION
-    # ---------------------------------------------------------
-    if not validate_oral_cavity_image(cv_img):
-
-        print(
-            "[SCAN] Image rejected by oral cavity validation."
-        )
-
-        return "Invalid Image"
 
     # ---------------------------------------------------------
     # PREPARE MODEL INPUT
@@ -711,9 +619,6 @@ def predict_image(image_path):
 
     # ---------------------------------------------------------
     # MODEL FORWARD PASS + OPTIONAL GRAD-CAM
-    #
-    # Classification runs without autograd. A positive prediction
-    # gets a second gradient-enabled pass for Grad-CAM.
     # ---------------------------------------------------------
     gradcam = None
 
@@ -730,8 +635,6 @@ def predict_image(image_path):
 
             model.eval()
 
-            # Classification does not require gradients.
-            # Grad-CAM is enabled separately for class 0.
             with torch.no_grad():
 
                 outputs = model(
@@ -801,8 +704,6 @@ def predict_image(image_path):
 
                 if heatmap is not None:
 
-                    # Generate Grad-CAM at the original
-                    # image dimensions for the report.
                     heatmap_resized = cv2.resize(
                         heatmap,
                         (
@@ -1193,6 +1094,7 @@ def scan():
             return redirect(
                 url_for('scan') 
             )
+
         filename = secure_filename(
             file.filename
         )
