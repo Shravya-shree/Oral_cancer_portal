@@ -16,50 +16,96 @@
           
           <p class="mb-2"><strong>Analysis Output:</strong></p>
           {% set outcome = (scan.result if scan else record.result) %}
-          {% if outcome == 'Cancer Detected' %}
+          
+          {% if 'Image Quality Insufficient' in outcome %}
+            <div class="alert alert-warning fw-bold shadow-sm text-dark border-warning">
+              <i class="bi bi-camera-fill me-2"></i> Image Quality Insufficient
+            </div>
+            <p class="text-danger small mt-1 fw-semibold">
+              {{ outcome.replace('Image Quality Insufficient: ', '') }}
+            </p>
+            <p class="text-muted small">
+              * The uploaded photo is unsuitable for clinical cancer screening. The cancer classifier was safely bypassed. Please take a new, sharp photo with adequate room lighting or flashlight.
+            </p>
+          {% elif 'Invalid Image' in outcome %}
+            <div class="alert alert-secondary fw-bold shadow-sm border-secondary text-dark">
+              <i class="bi bi-slash-circle me-2"></i> Non-Oral Upload Detected
+            </div>
+            <p class="text-danger small mt-1 fw-semibold">
+              {{ outcome.replace('Invalid Image: ', '') }}
+            </p>
+            <p class="text-muted small">
+              * The upload was identified as non-oral tissue or an external object. Please ensure the camera is framed directly inside the oral cavity.
+            </p>
+          {% elif outcome == 'Cancer Detected' %}
             <div class="alert alert-danger fw-bold shadow-sm">
               <i class="bi bi-exclamation-triangle-fill me-2"></i> Indication Found
             </div>
+            <p class="text-danger small mt-1">
+              * High suspicion of pathological tissue alteration detected. Immediate specialist consultation recommended.
+            </p>
+          {% elif 'Inconclusive' in outcome %}
+            <div class="alert alert-warning fw-bold shadow-sm text-dark">
+              <i class="bi bi-exclamation-circle-fill me-2"></i> Inconclusive — Review Needed
+            </div>
+            <p class="text-secondary small mt-1">
+              * Borderline tissue pattern detected. Clinical examination by an oral specialist is strongly advised.
+            </p>
           {% elif outcome == 'Clear' %}
             <div class="alert alert-success fw-bold shadow-sm">
               <i class="bi bi-check-circle-fill me-2"></i> Clear
             </div>
+            <p class="text-muted small mt-1">
+              * No focal malignant patterns detected during preliminary screening.
+            </p>
           {% else %}
-            <div class="alert alert-warning fw-bold shadow-sm">
-              <i class="bi bi-question-circle-fill me-2"></i> Invalid Image - Re-upload
+            <div class="alert alert-secondary fw-bold shadow-sm">
+              <i class="bi bi-question-circle-fill me-2"></i> Status: {{ outcome }}
             </div>
           {% endif %}
         </div>
 
-        <!-- Images Column (QR code removed from here) -->
+        <!-- Images Column -->
         <div class="col-md-7 text-center border-start">
           {% set img_file = (scan.image if scan else record.image) %}
           
           <div class="d-flex flex-wrap justify-content-center gap-3">
             <!-- Original Image -->
             <div>
-              <p class="small fw-semibold text-muted mb-1">Original Image</p>
-              <img src="{{ url_for('static', filename='uploads/' + img_file) }}" class="img-fluid rounded border shadow-sm" style="max-height: 180px; object-fit: cover;">
+              <p class="small fw-semibold text-muted mb-1">Uploaded Image</p>
+              <img src="{{ url_for('static', filename='uploads/' + img_file) }}" 
+                   class="img-fluid rounded border shadow-sm" 
+                   style="max-height: 200px; object-fit: cover;" 
+                   alt="Scan Upload">
             </div>
             
-            <!-- Grad-CAM (Only for Cancer Cases) -->
-            {% if outcome == 'Cancer Detected' %}
+            <!-- Grad-CAM (Displayed ONLY for valid Cancer and Inconclusive scans) -->
+            {% if outcome == 'Cancer Detected' or 'Inconclusive' in outcome %}
             <div>
-              <p class="small fw-bold text-danger mb-1">AI Region Focus</p>
-              <img src="{{ url_for('static', filename='uploads/gradcam_' + img_file) }}" class="img-fluid rounded border border-danger shadow-sm" style="max-height: 180px; object-fit: cover;">
+              <p class="small fw-bold {% if outcome == 'Cancer Detected' %}text-danger{% else %}text-warning-emphasis{% endif %} mb-1">
+                AI Region Focus
+              </p>
+              <img src="{{ url_for('static', filename='uploads/gradcam_' + img_file) }}" 
+                   class="img-fluid rounded border {% if outcome == 'Cancer Detected' %}border-danger{% else %}border-warning{% endif %} shadow-sm" 
+                   style="max-height: 200px; object-fit: cover;" 
+                   alt="Grad-CAM Heatmap">
             </div>
             {% endif %}
           </div>
         </div>
       </div>
 
-      <!-- Action Buttons with Generate QR Code -->
+      <!-- Action Buttons -->
       <div class="mt-4 border-top pt-3 text-end">
         {% set current_scan_id = (scan.id if scan else record.id) %}
+        {% if 'Quality Insufficient' not in outcome and 'Invalid' not in outcome %}
         <a href="{{ url_for('view_qr', scan_id=current_scan_id) }}" class="btn btn-danger me-2">
           <i class="bi bi-qr-code me-1"></i> Generate QR Code
         </a>
-        <a href="{{ url_for('scan') }}" class="btn btn-outline-primary me-2">New Scan</a>
+        {% endif %}
+        <a href="{{ url_for('scan') }}" class="btn btn-primary me-2">
+          <i class="bi bi-camera me-1"></i> New Scan
+        </a>
         <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Return to Dashboard</a>
       </div>
     </div>
